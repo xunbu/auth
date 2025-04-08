@@ -5,7 +5,9 @@
 |常见场景|前端向后端证明身份|用户授权客户端访问资源|
 |相关术语|session_id、JWT|oAuth2|
 
-一个流程中认证与授权通常配合使用。
+一个流程中认证与授权通常配合使用。  
+
+---
 # 认证机制
 ## 基于session_id的认证
 ### 时序图
@@ -95,7 +97,7 @@ sequenceDiagram
 - **会话劫持**：检测异常 IP/设备，强制注销。
 - **并发控制**：限制同一用户的活跃会话数。
 - **日志记录**：记录会话生命周期事件。
-
+---
 ## 基于JWT的认证
 ### 什么是 JWT？
 JWT（JSON Web Token）是一种用于在各方之间安全地传输信息的开放标准（RFC 7519）。 JWT 是一种紧凑、自包含的方式，用于以 JSON 对象安全地传输信息。 由于其数字签名，因此可以信任和使用该信息。 JWT 可以使用密钥（使用 HMAC 算法）或使用 RSA 或 ECDSA 的公钥/私钥对进行签名。
@@ -297,166 +299,249 @@ sequenceDiagram
 > 由于跨域问题，授权服务无法保证能通过cookie将Token传输给客户端
 > 因此oAuth2机制通过重定向机制以GET方法给客户端传递授权码code（授权码方式）或通过GET方法直接传递Token（隐式流模式）
 # 认证、授权完整流程
-## 基于session_id认证与oAuth2(授权码)授权机制的完整流程
-### 时序图
-```mermaid
-sequenceDiagram
-    participant Browser as 用户浏览器
-    participant Frontend as 前端应用
-    participant Backend as 后端服务
-    participant AuthServer as OAuth授权服务器
-    participant Resource as 资源API
-
-    Note over Browser,Frontend: 1. 初始访问
-    Browser->>Frontend: GET /home
-    Frontend->>Browser: 返回登录按钮(未登录状态)
-
-    Note over Browser,AuthServer: 2. 启动OAuth流程
-    Browser->>Frontend: 点击登录
-    Frontend->>Browser: 重定向到/auth/oauth?provider=xx
-    Browser->>Backend: GET /auth/oauth?provider=xx
-    Backend->>Browser: 302重定向到AuthServer(带client_id/redirect_uri/state等)
-    
-    Note over Browser,AuthServer: 3. 用户认证
-    Browser->>AuthServer: 显示授权页面
-    AuthServer->>Browser: 用户输入凭证
-    Browser->>AuthServer: POST 提交登录表单
-    
-    Note over AuthServer: 4. 颁发授权码
-    AuthServer->>Browser: 302重定向到Backend(带code和state)
-    Browser->>Backend: GET /oauth/callback?code=ABC123&state=XYZ
-    
-    Note over Backend,AuthServer: 5. 换取令牌
-    Backend->>AuthServer: POST /token (code+client_secret验证)
-    AuthServer->>Backend: 返回access_token和refresh_token
-    
-    Note over Backend: 6. 建立会话
-    Backend->>Backend: 验证用户信息(可调用/userinfo端点)
-    Backend->>Browser: Set-Cookie: session_id=SSO123 (HttpOnly/Secure)
-    
-    Note over Browser,Frontend: 7. 前端获知登录状态
-    Browser->>Frontend: GET /home (携带Cookie)
-    Frontend->>Backend: GET /api/session (检查登录状态)
-    Backend->>Frontend: 返回用户基本信息
-    
-    Note over Frontend,Resource: 8. 访问受保护资源
-    Frontend->>Backend: GET /api/data (携带Cookie)
-    Backend->>Resource: GET /data (携带Authorization: Bearer access_token)
-    Resource->>Backend: 返回数据
-    Backend->>Frontend: 返回应答数据
-```
-
-### 令牌刷新机制
-```mermaid
-graph LR
-A[前端请求API] --> B{后端检查token过期?}
-B -- 已过期 --> C[后端用refresh_token获取新access_token]
-C --> D[更新session存储]
-D --> E[继续处理原请求]
-B -- 有效 --> E
-```
-
-## 基于Token的无状态oAuth2机制完整流程(BFF/Cookie 模式)
+## 不同类型应用使用不同的oAuth2实现
+| 应用类型             | 推荐授权方式                   | 备注                                                |
+|----------------------|-------------------------------|-----------------------------------------------------|
+| 服务器端web应用   | 授权码授权                    | 客户端秘密保管在服务器                              |
+| 单页面应用 SPA       | 授权码授权 + PKCE             | 不再推荐使用隐式授权                                |
+| 原生移动应用         | 授权码授权 + PKCE             | 防止令牌被劫持                                      |
+| 高度信任官方客户端   | 密码模式/授权码+PKCE          | 不推荐密码方式，首选授权码+PKCE                     |
+| 服务之间通信         | 客户端凭证授权                | 无用户上下文，代表自身身份                          |
+## oAuth2授权码授权（服务器web应用）
 ### 时序图
 ```mermaid
 sequenceDiagram
     participant User as 用户浏览器
-    participant SPA as 前端应用
-    participant Backend as 后端API服务
-    participant AuthServer as OAuth授权服务器
-    participant Resource as 资源服务器
+    participant WebApp as 服务器端Web应用
+    participant AuthServer as 授权服务器
+    participant API as 资源服务器(API)
 
-    Note over User,SPA: 1. 初始化请求
-    User->>SPA: 访问 https://app.com
-    SPA->>User: 返回前端页面(检测无Token显示登录按钮)
+    Note over User,API: 授权码模式（最安全的服务器端流程）
+    User->>WebApp: 访问应用首页
+    WebApp->>User: 返回登录页面（带OAuth2登录链接）
 
-    Note over User,AuthServer: 2. 触发OAuth授权码流程
-    User->>SPA: 点击登录
-    SPA->>User: 重定向到 /auth/oauth?provider=google
-    User->>Backend: GET /auth/oauth?provider=google
-    Backend->>User: 302重定向到AuthServer(带client_id/redirect_uri/state/code_challenge(PKCE))
+    User->>AuthServer: 点击登录跳转授权页<br>(response_type=code, client_id, redirect_uri, scope, state)
+    AuthServer->>User: 返回登录/授权页面
+    User->>AuthServer: 输入账号密码并授权
+    AuthServer->>User: 302重定向到redirect_uri<br>?code=AUTH_CODE&state=XYZ
 
-    Note over User,AuthServer: 3. 用户认证
-    User->>AuthServer: 展示授权页面
-    AuthServer->>User: 用户输入凭证并同意授权
-    AuthServer->>User: 302重定向到Backend回调URL(带code和state)
+    User->>WebApp: 携带code访问回调接口
+    WebApp->>AuthServer: 用code换token（POST请求）<br>client_id, client_secret, code, redirect_uri
+    AuthServer->>WebApp: 返回access_token和refresh_token<br>(通常JSON格式)
 
-    Note over User,Backend: 4. 后端处理回调
-    User->>Backend: GET /oauth/callback?code=ABC&state=XYZ
-    Backend->>AuthServer: POST /token (code+code_verifier+client_secret)
-    AuthServer->>Backend: 返回JWT格式的access_token和refresh_token
-
-    Note over Backend: 5. 无状态响应生成
-    Backend->>Backend: 验证JWT签名/有效期<br>(无需存储会话状态)
-    Backend->>User: Set-Cookie: app_token=<JWT>(HttpOnly/Secure/SameSite=Lax)<br>前端可通过/js/get-token接口获取用户基本信息
-
-    Note over User,SPA: 6. 前端获取用户信息
-    User->>SPA: 自动跳转回/home
-    SPA->>Backend: GET /js/userinfo (携带Cookie)
-    Backend->>SPA: 返回用户基本信息(email/name等)
-
-    Note over SPA,Resource: 7. 访问受保护资源
-    SPA->>Backend: GET /api/data (携带Cookie)
-    Backend->>Resource: GET /data (携带Authorization: Bearer <JWT>)
-    Resource->>Backend: 验证JWT后返回数据
-    Backend->>SPA: 返回API响应
+    WebApp->>User: 设置会话Cookie/Session
+    WebApp->>API: 用access_token调用API<br>Authorization: Bearer {token}
+    API->>WebApp: 返回受保护资源
+    WebApp->>User: 渲染受保护页面
 ```
 
-## 基于Token的无状态oAuth2机制完整流程(纯 SPA 模式)
+## oAuth2隐式授权(单页面应用)
 ### 时序图
 ```mermaid
 sequenceDiagram
     participant User as 用户浏览器
-    participant SPA as 前端应用 (运行在浏览器)
-    participant Backend as 后端API服务
-    participant AuthServer as OAuth授权服务器
+    participant SPA as 单页应用(SPA)
+    participant AuthServer as 授权服务器
+    participant API as 资源服务器(API)
 
-    Note over User,SPA: 1. 初始化与检测登录状态
-    User->>SPA: 访问 https://app.com
-    SPA->>User: 返回前端页面
-    SPA->>SPA: 检查本地存储(内存)是否有有效Token
-    alt 无有效Token
-        SPA->>User: 显示登录按钮
-    else 有效Token
-        SPA->>User: 显示已登录状态
-        SPA->>Backend: (后续API请求) GET /api/userinfo (携带 Bearer Token)
-        Backend->>SPA: 返回用户信息
-    end
+    Note over User,API: 隐式授权流程（适用于SPA）
+    User->>SPA: 访问前端应用
+    SPA->>User: 返回前端页面（含OAuth2跳转逻辑）
+    
+    User->>AuthServer: 重定向到授权端点<br>(response_type=token, client_id, redirect_uri, scope)
+    AuthServer->>User: 返回登录页面
+    User->>AuthServer: 输入账号密码并授权
+    AuthServer->>User: 302重定向到redirect_uri<br>#access_token=XXX&token_type=Bearer&expires_in=3600
+    Note right of User: 令牌通过URL片段(#)传递，<br>前端JS提取但不会发送到服务器
 
-    Note over User,AuthServer: 2. 用户触发登录 (OAuth授权码+PKCE流程)
+    User->>SPA: 前端解析URL中的access_token
+    SPA->>API: 携带令牌访问API<br>Authorization: Bearer {access_token}
+    API->>SPA: 返回受保护资源
+```
+
+## oAuth2+PKCE机制完整流程(单页面应用)
+### 时序图
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant SPA as 单页应用(SPA)
+    participant AS as 授权服务器
+    participant RS as 资源服务器
+    Note over SPA,AS: 1. 初始化流程
+    SPA->>SPA: 生成code_verifier(随机43-128字符)
+    SPA->>SPA: 计算code_challenge = SHA256(code_verifier)
     User->>SPA: 点击登录按钮
-    SPA->>SPA: 生成 code_verifier 和 code_challenge (PKCE)
-    SPA->>SPA: 存储 code_verifier (例如：SessionStorage 或 内存)
-    SPA->>User: 302 重定向到 AuthServer 授权端点 (带 client_id, redirect_uri(指向SPA), state, code_challenge, scope, response_type=code)
-
-    Note over User,AuthServer: 3. 用户在授权服务器认证和授权
-    User->>AuthServer: (浏览器地址栏已是AuthServer) 显示登录和授权页面
-    AuthServer->>User: 用户输入凭证并同意授权
-    AuthServer->>User: 302 重定向回 SPA 的 redirect_uri (带 code 和 state)
-
-    Note over SPA,AuthServer: 4. SPA 处理回调并交换Token
-    User->>SPA: (浏览器加载SPA的redirect_uri) GET /callback?code=ABC&state=XYZ
-    SPA->>SPA: 验证 state 是否匹配
-    SPA->>SPA: 取出之前存储的 code_verifier
-    SPA->>AuthServer: POST /token (使用 code, code_verifier, client_id, redirect_uri, grant_type=authorization_code)
-    Note right of SPA: SPA可以直接调用AuthServer的Token端点，\n或者通过一个简单的后端代理来避免CORS和暴露client_id(如果需要保密)
-    AuthServer->>SPA: 返回 access_token, refresh_token, id_token (JWTs)
-
-    Note over SPA: 5. SPA 存储Token并更新UI
-    SPA->>SPA: 存储 Tokens (安全方式，如内存变量，避免LocalStorage)
-    SPA->>SPA: (可选) 解码 id_token 获取用户信息 或 调用 /userinfo 端点
-    SPA->>User: 更新UI，显示用户已登录
-
-    Note over SPA,Backend: 6. SPA 访问受保护的后端API
-    User->>SPA: (例如，导航到需要数据的页面)
-    SPA->>SPA: 从存储中获取 access_token
-    SPA->>Backend: GET /api/data (携带 Authorization: Bearer <access_token> 头)
-
-    Note over Backend: 7. 后端API验证Token并处理请求
-    Backend->>Backend: 验证收到的 access_token (签名, 有效期, audience, issuer - 可能需获取AuthServer的公钥/JWKS)
-    opt 需要访问其他资源服务器
-        Backend->>ResourceServer: GET /resource (携带原始或新的Token)
-        ResourceServer->>Backend: 返回资源数据
-    end
-    Backend->>SPA: 返回API响应数据
+    SPA->>AS: GET /authorize?response_type=code<br>&client_id=SPA_CLIENT_ID<br>&redirect_uri=SPA_CALLBACK_URI<br>&scope=openid profile<br>&code_challenge=xxx<br>&code_challenge_method=S256<br>&state=随机值
+    Note right of AS: 2. 用户认证
+    AS->>User: 显示登录页面
+    User->>AS: 提交凭据
+    AS->>User: 302重定向到SPA_CALLBACK_URI<br>?code=AUTHORIZATION_CODE<br>&state=原值
+    Note over SPA,AS: 3. 获取Access Token
+    SPA->>AS: POST /token<br>grant_type=authorization_code<br>&code=AUTHORIZATION_CODE<br>&redirect_uri=SPA_CALLBACK_URI<br>&client_id=SPA_CLIENT_ID<br>&code_verifier=原始值
+    AS->>AS: 验证code_verifier匹配code_challenge
+    AS->>SPA: 返回JSON: {access_token, refresh_token, expires_in}
+    Note over SPA,RS: 4. 访问受保护资源
+    SPA->>RS: GET /api/resource<br>Authorization: Bearer ACCESS_TOKEN
+    RS->>AS: 内省token验证
+    AS->>RS: 返回token有效性和scope
+    RS->>SPA: 返回请求的资源数据
+    Note over SPA,AS: 5. Token刷新(可选)
+    SPA->>AS: POST /token<br>grant_type=refresh_token<br>&refresh_token=REFRESH_TOKEN<br>&client_id=SPA_CLIENT_ID
+    AS->>SPA: 返回新的{access_token, refresh_token}
 ```
+### 详细流程
+#### **1. 初始化流程（SPA准备PKCE参数）**
+- **SPA生成 `code_verifier`**  
+  - 一个随机字符串（43-128字符，仅包含字母、数字、`-`、`.`、`_`、`~`）。  
+  - **安全要求**：必须使用密码学安全的随机生成器（如 `crypto.getRandomValues()`）。  
+- **SPA计算 `code_challenge`**  
+  - 对 `code_verifier` 进行 SHA-256 哈希，然后 Base64-URL 编码。  
+  - 公式：`code_challenge = base64url(sha256(code_verifier))`。  
+- **存储 `code_verifier`**  
+  - 仅保存在内存中（不写入 `localStorage` 或 Cookie），后续换取 Token 时使用。
+---
+
+#### **2. 用户发起授权请求（前端跳转）**
+SPA 构造授权请求 URL，重定向用户到 **授权服务器（AS）**：  
+```http
+GET /authorize?
+  response_type=code
+  &client_id=SPA_CLIENT_ID
+  &redirect_uri=https://spa.example.com/callback
+  &scope=openid profile
+  &code_challenge=xxx（生成的code_challenge）
+  &code_challenge_method=S256
+  &state=随机值（防CSRF）
+```
+- **关键参数**：  
+  - `response_type=code`：要求返回授权码（Authorization Code）。  
+  - `code_challenge` 和 `code_challenge_method`：PKCE 的核心，防止授权码截获攻击。  
+  - `state`：随机值，用于防止 CSRF（回调时需验证是否匹配）。  
+- **用户交互**：  
+  - AS 展示登录页面，用户输入凭据（或选择社交登录）。  
+  - AS 可能要求用户同意请求的权限（`scope`）。
+
+---
+
+#### **3. 授权服务器回调SPA（携带授权码）**
+AS 认证成功后，重定向回 SPA 的 `redirect_uri`：  
+```http
+HTTP 302 Redirect to:
+https://spa.example.com/callback?
+  code=AUTHORIZATION_CODE
+  &state=原值（必须与请求时一致）
+```
+- **安全验证**：  
+  - SPA 必须检查 `state` 是否与初始请求一致，防止 CSRF。  
+  - 仅接受匹配预注册的 `redirect_uri`（防止开放重定向攻击）。
+
+---
+
+#### **4. SPA 用授权码换取 Token（PKCE验证）**
+SPA 向 AS 的 Token 端点发送请求，附带 `code_verifier`：  
+```http
+POST /token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&code=AUTHORIZATION_CODE
+&redirect_uri=https://spa.example.com/callback
+&client_id=SPA_CLIENT_ID
+&code_verifier=原始值（非code_challenge）
+```
+- **PKCE 关键验证**：  
+  - AS 会重新计算 `code_challenge`（用收到的 `code_verifier`），验证是否与初始请求的 `code_challenge` 一致。  
+  - 如果匹配，AS 返回 Token；否则拒绝请求。  
+- **响应示例**：  
+  ```json
+  {
+    "access_token": "xxx",
+    "refresh_token": "xxx", // 可选（需明确请求offline_access scope）
+    "expires_in": 3600,
+    "token_type": "Bearer"
+  }
+  ```
+
+---
+
+#### **5. SPA 使用 Access Token 访问资源**
+SPA 在请求头中携带 `access_token` 访问资源服务器（RS）：  
+```http
+GET /api/userinfo
+Authorization: Bearer ACCESS_TOKEN
+```
+- **资源服务器的验证**：  
+  - RS 可能通过 **Token 内省（Introspection）** 或 **JWT 自验证** 检查 Token 有效性。  
+  - 验证通过后返回请求的资源数据。
+
+---
+
+#### **6. Token 刷新（可选）**
+如果 `access_token` 过期，SPA 用 `refresh_token` 获取新 Token：  
+```http
+POST /token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token
+&refresh_token=REFRESH_TOKEN
+&client_id=SPA_CLIENT_ID
+```
+- **安全限制**：  
+  - `refresh_token` 需通过 HTTPS 传输。  
+  - 纯 SPA 应限制 `refresh_token` 有效期（如 30 天）。
+---
+## oAuth2客户端凭证流程（服务之间通信）
+### 时序图
+```mermaid
+sequenceDiagram
+    participant ServiceA as 服务A（客户端）
+    participant AuthServer as 授权服务器
+    participant ServiceB as 服务B（资源服务器）
+
+    Note over ServiceA,ServiceB: 客户端凭证模式（无用户参与）
+    ServiceA->>AuthServer: 请求access_token<br>（client_id, client_secret, grant_type=client_credentials）
+    AuthServer->>ServiceA: 返回access_token<br>（无refresh_token）
+    ServiceA->>ServiceB: 调用API<br>Authorization: Bearer {access_token}
+    ServiceB->>AuthServer: 验证令牌（可选）
+    AuthServer->>ServiceB: 令牌有效性响应
+    ServiceB->>ServiceA: 返回API数据
+```
+### 详细流程
+1. **服务A获取令牌**  
+   - 直接向后端授权服务器发送请求（HTTP POST），无需用户交互：  
+     ```http
+     POST /token HTTP/1.1
+     Content-Type: application/x-www-form-urlencoded
+
+     grant_type=client_credentials
+     &client_id=SERVICE_A_ID
+     &client_secret=SERVICE_A_SECRET
+     ```
+   - **安全要求**：`client_secret`必须严格保密（使用环境变量/密钥管理服务）。
+
+2. **授权服务器响应**  
+   - 返回仅包含`access_token`的响应（通常不生成`refresh_token`）：  
+     ```json
+     {
+       "access_token": "eyJhbGci...",
+       "token_type": "Bearer",
+       "expires_in": 3600
+     }
+     ```
+
+3. **服务A调用服务B**  
+   - 在API请求头中携带令牌：  
+     ```http
+     GET /api/data HTTP/1.1
+     Authorization: Bearer eyJhbGci...
+     ```
+
+4. **服务B验证令牌**（两种方式）  
+   - **自省（Introspection）**：调用授权服务器的验证接口（更安全）：  
+     ```http
+     POST /introspect HTTP/1.1
+     token=eyJhbGci...
+     ```
+   - **本地验证**：若使用JWT，直接校验签名和过期时间。
+
+---
